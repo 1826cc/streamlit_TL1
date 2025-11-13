@@ -49,7 +49,6 @@ def resolve_sel_month(overview):
         return None
     return _ref.to_period("M")
 
-# ===== 常量（同 v5） =====
 _SALES_SHEETS    = ["销量-5001","销量-5002","销量"]
 _TRANSFER_SHEETS = ["销量-转调理品原料","销量-调拨宫产量","销量-生肉转调理品原料"]
 _DATE_CANDS   = ["单据日期","记帐日期","记账日期","凭证日期","日期","输入日期","过账日期"]
@@ -314,10 +313,7 @@ def build_daily_code_price_raw(xls):
     if 'tax_factor_for_code' in globals():
         comb["金额"] = comb["金额"] * comb["物料号"].apply(tax_factor_for_code)
 
-    # 数量允许为负；仅数量==0/NaN 时置 NaN
-    comb["综合单价"] = np.where(comb["数量"] != 0, comb["金额"] / comb["数量"], np.nan)
-
-    # 数量允许为负；仅数量==0/NaN 时置 NaN 避免除零
+    # 数量允许为负；仅数量==0/NaN 时置 NaN（去掉重复行，保留一处）
     comb["综合单价"] = np.where(comb["数量"] != 0, comb["金额"] / comb["数量"], np.nan)
 
     return comb
@@ -896,27 +892,27 @@ if _show_missing:
     qty_all = read_qty_per_code_per_day(xls)
     pr_all  = build_daily_code_price_raw(xls)
 
-    fallback_days = locals().get('days', locals().get('days2', []))
-    _raw = (locals().get('sel') if ('sel' in locals() and str(locals().get('sel')).strip()!="")
-            else (fallback_days[-1] if fallback_days else None))
+    def _latest_date_from(df, col="日期"):
+        if df is None or getattr(df, "empty", True) or (col not in df.columns):
+            return pd.NaT
+        return pd.to_datetime(df[col], errors="coerce").max()
 
-    ts = pd.to_datetime(_raw, errors="coerce")
-    if pd.isna(ts):
-        st.error("选择的日期无法解析，请检查数据源中的日期格式（建议形如 2025-10-31）。")
-        st.stop()
+    # 依次尝试：sel → sel2 → overview → qty_all → pr_all
+    candidates = []
+    if "sel" in locals():
+        candidates.append(pd.to_datetime(sel, errors="coerce"))
+    if "sel2" in locals():
+        candidates.append(pd.to_datetime(sel2, errors="coerce"))
+    candidates.append(_latest_date_from(overview))
+    candidates.append(_latest_date_from(qty_all))
+    candidates.append(_latest_date_from(pr_all))
 
-    _ref = None
-    if 'sel' in locals():
-        _ref = pd.to_datetime(sel, errors="coerce")
-    elif 'sel2' in locals():
-        _ref = pd.to_datetime(sel2, errors="coerce")
-    if (_ref is None) or pd.isna(_ref):
-        _ref = pd.to_datetime(overview["日期"], errors="coerce").max()
+    _ref = next((d for d in candidates if pd.notna(d)), pd.NaT)
     if pd.isna(_ref):
-        st.warning("没有可用日期，无法生成“当月无售价”的清单。")
+        st.error("没有可用日期，无法生成“当月无售价”的清单。请检查主数据/销量/转调表中的日期列（建议 2025-10-31 格式）。")
         st.stop()
 
-    sel_month = _ref.to_period("M")
+    sel_month = pd.Timestamp(_ref).to_period("M")
 
     qd  = qty_all.loc[pd.to_datetime(qty_all["日期"]).dt.to_period("M") == sel_month].copy()
     pd0 = pr_all .loc[pd.to_datetime(pr_all ["日期"]).dt.to_period("M") == sel_month].copy()
